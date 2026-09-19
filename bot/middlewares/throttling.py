@@ -1,34 +1,41 @@
 from typing import Any, Awaitable, Callable, Dict
-import time
+
 from aiogram import BaseMiddleware
-from aiogram.types import Message, CallbackQuery, TelegramObject
+from aiogram.types import CallbackQuery, Message, TelegramObject, User
 from cachetools import TTLCache
-from bot.config import config
 
 
 class ThrottlingMiddleware(BaseMiddleware):
-    def __init__(self, limit: float = config.RATE_LIMIT):
-        self.cache = TTLCache(maxsize=10000, ttl=limit)
+    """
+    Не чаще одного запроса за `rate` секунд от пользователя.
+    Регистрируется как inner-middleware, поэтому срабатывает только после фильтров,
+    то есть на сообщения, которые действительно адресованы боту.
+    Предупреждение отправляется один раз за окно, чтобы бот сам не спамил.
+    """
+
+    def __init__(self, rate: float) -> None:
+        self.rate = rate
+        self._recent: TTLCache = TTLCache(maxsize=10_000, ttl=rate if rate > 0 else 1)
+        self._warned: TTLCache = TTLCache(maxsize=10_000, ttl=rate if rate > 0 else 1)
 
     async def __call__(
         self,
         handler: Callable[[TelegramObject, Dict[str, Any]], Awaitable[Any]],
         event: TelegramObject,
-        data: Dict[str, Any]
+        data: Dict[str, Any],
     ) -> Any:
-        user_id = None
-        if isinstance(event, Message) and event.from_user:
-            user_id = event.from_user.id
-        elif isinstance(event, CallbackQuery) and event.from_user:
-            user_id = event.from_user.id
+        user: User | None = data.get("event_from_user")
+        if self.rate <= 0 or user is None:
+            return await handler(event, data)
 
-        if user_id:
-            if user_id in self.cache:
-                if isinstance(event, Message):
-                    await event.answer("⏳ Не спешите, вы отправляете запросы слишком часто!")
-                elif isinstance(event, CallbackQuery):
-                    await event.answer("⏳ Подождите секунду...", show_alert=False)
-                return None
-            self.cache[user_id] = time.time()
+        if user.id in self._recent:
+            if isinstance(event, CallbackQuery):
+                # На callback нужно ответить в любом случае, иначе у кнопки будут «часики».
+                await event.answer("⏳ Подождите секунду…")
+            elif isinstance(event, Message) and user.id not in self._warned:
+                self._warned[user.id] = True
+                await event.reply("⏳ Не спешите, вы отправляете запросы слишком часто!")
+            return None
 
+        self._recent[user.id] = True
         return await handler(event, data)

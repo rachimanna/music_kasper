@@ -1,57 +1,55 @@
 from math import ceil
 from typing import List
+from urllib.parse import quote_plus
+
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from aiogram.utils.keyboard import InlineKeyboardBuilder
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-from bot.services.base import Track
-from bot.utils.formatters import format_duration
+
 from bot.config import config
+from bot.services.base import Track
+from bot.utils.formatters import format_duration, truncate
 
 
-def get_search_results_keyboard(tracks: List[Track], query: str, page: int = 1) -> InlineKeyboardMarkup:
+def total_pages(tracks: List[Track]) -> int:
+    return max(1, ceil(len(tracks) / config.PAGE_SIZE))
+
+
+def search_results_keyboard(session_id: str, tracks: List[Track], page: int = 1) -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
-    total_pages = max(1, ceil(len(tracks) / config.PAGE_SIZE))
-    page = max(1, min(page, total_pages))
+    pages = total_pages(tracks)
+    page = max(1, min(page, pages))
 
-    start_idx = (page - 1) * config.PAGE_SIZE
-    page_tracks = tracks[start_idx:start_idx + config.PAGE_SIZE]
+    start = (page - 1) * config.PAGE_SIZE
+    for number, track in enumerate(tracks[start:start + config.PAGE_SIZE], start=start + 1):
+        text = f"{number}. {track.artist} — {track.title} ({format_duration(track.duration)})"
+        builder.row(InlineKeyboardButton(text=truncate(text, 60), callback_data=f"sel:{track.id}"))
 
-    for idx, track in enumerate(page_tracks, start=start_idx + 1):
-        dur = format_duration(track.duration)
-        title = f"{idx}. {track.artist} - {track.title} ({dur})"
-        if len(title) > 60:
-            title = title[:57] + "..."
-        builder.row(
-            InlineKeyboardButton(text=title, callback_data=f"sel:{track.id}")
-        )
-
-    nav_buttons = []
+    nav = []
     if page > 1:
-        nav_buttons.append(
-            InlineKeyboardButton(text="⬅️ Назад", callback_data=f"page:{page - 1}")
-        )
-
-    nav_buttons.append(
-        InlineKeyboardButton(text=f"📄 {page}/{total_pages}", callback_data="noop")
-    )
-
-    if page < total_pages:
-        nav_buttons.append(
-            InlineKeyboardButton(text="Вперёд ➡️", callback_data=f"page:{page + 1}")
-        )
-
-    builder.row(*nav_buttons)
+        nav.append(InlineKeyboardButton(text="⬅️ Назад", callback_data=f"page:{session_id}:{page - 1}"))
+    nav.append(InlineKeyboardButton(text=f"📄 {page}/{pages}", callback_data="noop"))
+    if page < pages:
+        nav.append(InlineKeyboardButton(text="Вперёд ➡️", callback_data=f"page:{session_id}:{page + 1}"))
+    builder.row(*nav)
     return builder.as_markup()
 
 
-def get_track_action_keyboard(track: Track) -> InlineKeyboardMarkup:
+def youtube_search_url(track: Track) -> str:
+    return "https://www.youtube.com/results?search_query=" + quote_plus(f"{track.artist} {track.title}")
+
+
+def track_links_keyboard(track: Track, with_download: bool = False) -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
-    builder.row(
-        InlineKeyboardButton(text="🎧 Слушать трек", url=track.external_url)
-    )
-    builder.row(
-        InlineKeyboardButton(
-            text="🔎 Искать в YouTube",
-            url=f"https://www.youtube.com/results?search_query={track.artist}+{track.title}"
+    if with_download and config.BOT_USERNAME:
+        # Deep link: открывает личку с ботом и сразу запускает скачивание полной версии.
+        builder.row(
+            InlineKeyboardButton(
+                text="⬇️ Скачать полную версию",
+                url=f"https://t.me/{config.BOT_USERNAME}?start=t_{track.id}",
+            )
         )
+    builder.row(
+        InlineKeyboardButton(text="🎧 Открыть в Deezer", url=track.external_url),
+        InlineKeyboardButton(text="🔎 YouTube", url=youtube_search_url(track)),
     )
     return builder.as_markup()

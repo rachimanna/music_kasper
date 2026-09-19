@@ -1,1 +1,1 @@
-"""Music Kasper Bot Package"""
+"""music_kasper bot"""

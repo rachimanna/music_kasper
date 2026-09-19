@@ -1,8 +1,9 @@
 __pycache__/
 *.py[cod]
-*$py.class
 venv/
 .env
-music_bot.db
+*.db
+*.db-shm
+*.db-wal
 *.log
 .DS_Store

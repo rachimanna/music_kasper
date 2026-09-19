@@ -1,1 +1,1 @@
-"""Music provider services"""
+"""Services package"""

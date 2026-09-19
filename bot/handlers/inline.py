@@ -1,91 +1,82 @@
-from aiogram import Router
-from aiogram.types import (
-    InlineQuery,
-    InlineQueryResultAudio,
-    InlineQueryResultArticle,
-    InputTextMessageContent
-)
-from bot.services.deezer_service import DeezerMusicService
-from bot.database.db import db
-from bot.keyboards.pagination import get_track_action_keyboard
+import html
+import logging
 
-router = Router()
-music_service = DeezerMusicService()
+from aiogram import Router
+from aiogram.enums import ParseMode
+from aiogram.types import InlineQuery, InlineQueryResultArticle, InputTextMessageContent
+
+from bot.config import config
+from bot.keyboards.pagination import track_links_keyboard
+from bot.services.base import ProviderError
+from bot.services.catalog import search_tracks
+from bot.utils.formatters import format_duration
+
+logger = logging.getLogger(__name__)
+
+router = Router(name="inline")
+
+
+def _hint(result_id: str, title: str, description: str) -> InlineQueryResultArticle:
+    return InlineQueryResultArticle(
+        id=result_id,
+        title=title,
+        description=description,
+        input_message_content=InputTextMessageContent(message_text=f"{title}\n{description}", parse_mode=None),
+    )
 
 
 @router.inline_query()
-async def inline_search(inline_query: InlineQuery):
-    query = inline_query.query.strip()
+async def inline_search(inline_query: InlineQuery) -> None:
+    query = " ".join(inline_query.query.split())[: config.MAX_QUERY_LENGTH]
 
     if not query:
-        placeholder = [
-            InlineQueryResultArticle(
-                id="empty_query",
-                title="Начните вводить название песни или артиста",
-                description="Например: Michael Jackson",
-                input_message_content=InputTextMessageContent(
-                    message_text="Чтобы найти трек, напишите название после юзернейма бота.",
-                    parse_mode="Markdown"
-                )
-            )
-        ]
-        await inline_query.answer(placeholder, cache_time=5, is_personal=True)
+        await inline_query.answer(
+            [_hint("empty", "Начните вводить название песни или артиста", "Например: Michael Jackson")],
+            cache_time=300,
+        )
         return
 
     try:
-        cached_tracks = await db.get_cached_search(query)
-        if cached_tracks:
-            tracks = cached_tracks
-        else:
-            tracks = await music_service.search(query, limit=15)
-            if tracks:
-                await db.save_search_cache(query, tracks)
-
-        if not tracks:
-            not_found = [
-                InlineQueryResultArticle(
-                    id="not_found",
-                    title="Ничего не найдено",
-                    description=f"По запросу «{query}» нет треков.",
-                    input_message_content=InputTextMessageContent(
-                        message_text=f"Песня «{query}» не найдена.",
-                    )
-                )
-            ]
-            await inline_query.answer(not_found, cache_time=10, is_personal=True)
-            return
-
-        results = []
-        for track in tracks:
-            if track.preview_url:
-                results.append(
-                    InlineQueryResultAudio(
-                        id=f"inline_{track.id}",
-                        audio_url=track.preview_url,
-                        title=track.title,
-                        performer=track.artist,
-                        audio_duration=30,
-                        reply_markup=get_track_action_keyboard(track)
-                    )
-                )
-            else:
-                results.append(
-                    InlineQueryResultArticle(
-                        id=f"inline_art_{track.id}",
-                        title=f"{track.artist} - {track.title}",
-                        description=f"Длительность: {track.duration // 60}:{track.duration % 60:02d}",
-                        thumbnail_url=track.cover_url,
-                        input_message_content=InputTextMessageContent(
-                            message_text=(
-                                f"🎧 **{track.artist} — {track.title}**\n"
-                                f"Слушать: {track.external_url}"
-                            ),
-                            parse_mode="Markdown"
-                        ),
-                        reply_markup=get_track_action_keyboard(track)
-                    )
-                )
-
-        await inline_query.answer(results, cache_time=300, is_personal=True)
+        tracks = await search_tracks(query)
+    except ProviderError as exc:
+        logger.warning("Inline provider error: %s", exc)
+        await inline_query.answer(
+            [_hint("unavailable", "Сервис временно недоступен", "Попробуйте через минуту")],
+            cache_time=5,
+        )
+        return
     except Exception:
-        await inline_query.answer([], cache_time=5, is_personal=True)
+        logger.exception("Inline search failed for %r", query)
+        await inline_query.answer([], cache_time=5)
+        return
+
+    if not tracks:
+        await inline_query.answer(
+            [_hint("not_found", "Ничего не найдено", f"По запросу «{query}» треков нет")],
+            cache_time=30,
+        )
+        return
+
+    # Отправляем карточку трека с кнопкой «Скачать полную версию» (deep link в личку бота),
+    # а не 30-секундное превью Deezer — его ссылки к тому же со временем истекают.
+    results = []
+    for track in tracks[: config.INLINE_LIMIT]:
+        duration = format_duration(track.duration)
+        results.append(
+            InlineQueryResultArticle(
+                id=f"t_{track.id}",
+                title=track.title,
+                description=f"{track.artist} · {duration}",
+                thumbnail_url=track.cover_url,
+                input_message_content=InputTextMessageContent(
+                    message_text=(
+                        f"🎧 <b>{html.escape(track.full_name)}</b>\n"
+                        f"⏱ {duration}"
+                    ),
+                    parse_mode=ParseMode.HTML,
+                ),
+                reply_markup=track_links_keyboard(track, with_download=True),
+            )
+        )
+
+    await inline_query.answer(results, cache_time=300)
