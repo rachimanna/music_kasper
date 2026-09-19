@@ -20,6 +20,17 @@ class YouTubeDownloader:
             "quiet": True,
             "no_warnings": True,
             "default_search": "ytsearch1:",
+            # Обход капчи дата-центров через мобильные клиенты
+            "extractor_args": {
+                "youtube": {
+                    "player_client": ["android", "ios"],
+                    "player_skip": ["webpage", "configs"],
+                }
+            },
+            "http_headers": {
+                "User-Agent": "com.google.android.youtube/19.09.37 (Linux; U; Android 11) gzip",
+                "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7",
+            },
             "postprocessors": [{
                 "key": "FFmpegExtractAudio",
                 "preferredcodec": "mp3",
@@ -30,7 +41,10 @@ class YouTubeDownloader:
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info = ydl.extract_info(query, download=True)
-                if "entries" in info:
+                if not info:
+                    return None
+                    
+                if "entries" in info and info["entries"]:
                     info = info["entries"][0]
 
                 track_id = info.get("id")
@@ -47,7 +61,7 @@ class YouTubeDownloader:
             return None
 
     async def download_track(self, query: str) -> Optional[Dict[str, str]]:
-        """Скачивает аудио в фоновом потоке, чтобы не вешать бота"""
+        """Скачивает аудио в фоновом потоке, не блокируя работу бота"""
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(None, self._download_sync, query)
 
