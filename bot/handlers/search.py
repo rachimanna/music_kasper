@@ -1,3 +1,4 @@
+import html
 import os
 from aiogram import Router, F
 from aiogram.types import Message, CallbackQuery, FSInputFile, URLInputFile
@@ -33,8 +34,8 @@ async def handle_search_message(message: Message):
 
     if not query:
         await message.reply(
-            "⚠️ Пожалуйста, укажите название трека или исполнителя.\nПример: `найди The Weeknd`",
-            parse_mode="Markdown"
+            "⚠️ Пожалуйста, укажите название трека или исполнителя.\nПример: <code>найди The Weeknd</code>",
+            parse_mode="HTML"
         )
         return
 
@@ -58,13 +59,14 @@ async def handle_search_message(message: Message):
             "tracks": tracks
         }
 
+        safe_query = html.escape(query)
         keyboard = get_search_results_keyboard(tracks, query, page=1)
         await wait_msg.edit_text(
-            f"🎵 **Результаты поиска по запросу:** «{query}»\n"
+            f"🎵 <b>Результаты поиска по запросу:</b> «{safe_query}»\n"
             f"Найдено треков: {len(tracks)}\n\n"
-            "Выберите трек для загрузки **полной версии**:",
+            "Выберите трек для загрузки:",
             reply_markup=keyboard,
-            parse_mode="Markdown"
+            parse_mode="HTML"
         )
     except Exception:
         await wait_msg.edit_text("❌ Произошла ошибка сервиса при поиске. Попробуйте позже.")
@@ -110,17 +112,21 @@ async def handle_track_select(callback: CallbackQuery):
         await callback.answer("⚠️ Трек не найден.", show_alert=True)
         return
 
-    # Уведомляем пользователя о начале загрузки полного аудио
-    await callback.answer("⏳ Скачиваю полный трек, подождите...")
-    status_msg = await callback.message.answer(f"⏳ Скачиваю полную версию **{track.artist} — {track.title}**...")
+    safe_artist = html.escape(track.artist)
+    safe_title = html.escape(track.title)
 
-    # Ищем и скачиваем полный трек
+    await callback.answer("⏳ Загружаю трек...")
+    status_msg = await callback.message.answer(
+        f"⏳ Скачиваю полную версию <b>{safe_artist} — {safe_title}</b>...",
+        parse_mode="HTML"
+    )
+
     search_query = f"{track.artist} {track.title} audio"
     download_info = await yt_service.download_track(search_query)
 
     caption = (
-        f"🎧 **{track.artist} — {track.title}**\n"
-        f"⏱ Полная длительность: {format_duration(track.duration)}"
+        f"🎧 <b>{safe_artist} — {safe_title}</b>\n"
+        f"⏱ Длительность: {format_duration(track.duration)}"
     )
     keyboard = get_track_action_keyboard(track)
 
@@ -138,23 +144,25 @@ async def handle_track_select(callback: CallbackQuery):
                 duration=track.duration or download_info["duration"],
                 thumbnail=thumb,
                 reply_markup=keyboard,
-                parse_mode="Markdown"
+                parse_mode="HTML"
             )
             await status_msg.delete()
         finally:
-            # Обязательно удаляем временный файл, чтобы не переполнять диск на бесплатном сервере
             if os.path.exists(file_path):
                 os.remove(file_path)
     else:
-        # Резервный вариант, если ютуб временно заблокировал запрос — отправляем 30-сек превью
-        await status_msg.edit_text("⚠️ Не удалось загрузить полную версию. Отправляю официальное превью:")
+        # Резервный вариант, если прямая ссылка не скачалась
+        await status_msg.edit_text(
+            "⚠️ Полный трек временно недоступен. Отправляю превью:",
+            parse_mode="HTML"
+        )
         if track.preview_url:
             await callback.message.answer_audio(
                 audio=URLInputFile(track.preview_url),
-                caption=caption + " (Превью)",
+                caption=caption + " <i>(Превью)</i>",
                 title=track.title,
                 performer=track.artist,
                 duration=30,
                 reply_markup=keyboard,
-                parse_mode="Markdown"
+                parse_mode="HTML"
             )
