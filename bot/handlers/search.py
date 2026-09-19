@@ -1,6 +1,8 @@
+import os
 from aiogram import Router, F
-from aiogram.types import Message, CallbackQuery, URLInputFile
+from aiogram.types import Message, CallbackQuery, FSInputFile, URLInputFile
 from bot.services.deezer_service import DeezerMusicService
+from bot.services.yt_service import yt_service
 from bot.database.db import db
 from bot.keyboards.pagination import get_search_results_keyboard, get_track_action_keyboard
 from bot.utils.formatters import sanitize_query, format_duration
@@ -60,7 +62,7 @@ async def handle_search_message(message: Message):
         await wait_msg.edit_text(
             f"🎵 **Результаты поиска по запросу:** «{query}»\n"
             f"Найдено треков: {len(tracks)}\n\n"
-            "Выберите трек для прослушивания:",
+            "Выберите трек для загрузки **полной версии**:",
             reply_markup=keyboard,
             parse_mode="Markdown"
         )
@@ -105,42 +107,54 @@ async def handle_track_select(callback: CallbackQuery):
             await db.save_track(track)
 
     if not track:
-        await callback.answer("⚠️ Трек не найден или удалён из источника.", show_alert=True)
+        await callback.answer("⚠️ Трек не найден.", show_alert=True)
         return
 
-    await callback.answer("Загружаю трек...")
+    # Уведомляем пользователя о начале загрузки полного аудио
+    await callback.answer("⏳ Скачиваю полный трек, подождите...")
+    status_msg = await callback.message.answer(f"⏳ Скачиваю полную версию **{track.artist} — {track.title}**...")
+
+    # Ищем и скачиваем полный трек
+    search_query = f"{track.artist} {track.title} audio"
+    download_info = await yt_service.download_track(search_query)
 
     caption = (
         f"🎧 **{track.artist} — {track.title}**\n"
-        f"⏱ Длительность: {format_duration(track.duration)}"
+        f"⏱ Полная длительность: {format_duration(track.duration)}"
     )
     keyboard = get_track_action_keyboard(track)
 
-    if track.preview_url:
-        audio = URLInputFile(track.preview_url, filename=f"{track.artist} - {track.title}.mp3")
-        thumb = URLInputFile(track.cover_url) if track.cover_url else None
+    if download_info and os.path.exists(download_info["file_path"]):
+        file_path = download_info["file_path"]
+        try:
+            audio_file = FSInputFile(file_path, filename=f"{track.artist} - {track.title}.mp3")
+            thumb = URLInputFile(track.cover_url) if track.cover_url else None
 
-        await callback.message.answer_audio(
-            audio=audio,
-            caption=caption,
-            title=track.title,
-            performer=track.artist,
-            duration=30,
-            thumbnail=thumb,
-            reply_markup=keyboard,
-            parse_mode="Markdown"
-        )
-    else:
-        if track.cover_url:
-            await callback.message.answer_photo(
-                photo=track.cover_url,
-                caption=caption + "\n\n*(Превью аудио недоступно для этого трека)*",
+            await callback.message.answer_audio(
+                audio=audio_file,
+                caption=caption,
+                title=track.title,
+                performer=track.artist,
+                duration=track.duration or download_info["duration"],
+                thumbnail=thumb,
                 reply_markup=keyboard,
                 parse_mode="Markdown"
             )
-        else:
-            await callback.message.answer(
-                caption,
+            await status_msg.delete()
+        finally:
+            # Обязательно удаляем временный файл, чтобы не переполнять диск на бесплатном сервере
+            if os.path.exists(file_path):
+                os.remove(file_path)
+    else:
+        # Резервный вариант, если ютуб временно заблокировал запрос — отправляем 30-сек превью
+        await status_msg.edit_text("⚠️ Не удалось загрузить полную версию. Отправляю официальное превью:")
+        if track.preview_url:
+            await callback.message.answer_audio(
+                audio=URLInputFile(track.preview_url),
+                caption=caption + " (Превью)",
+                title=track.title,
+                performer=track.artist,
+                duration=30,
                 reply_markup=keyboard,
                 parse_mode="Markdown"
             )
