@@ -23,7 +23,14 @@ class Settings(BaseSettings):
     SESSION_TTL: int = Field(default=3 * 24 * 3600, ge=60, description="Сколько секунд работают кнопки страниц")
     MAX_QUERY_LENGTH: int = Field(default=100, ge=10)
 
-    # --- Источник полных аудиофайлов ---
+    # --- Jamendo: легальные полные треки под Creative Commons ---
+    # Бесплатный client_id: https://devportal.jamendo.com
+    JAMENDO_CLIENT_ID: str = Field(default="")
+
+    # --- Превью Deezer (30 сек), если полной версии нет ---
+    PREVIEW_ENABLED: bool = Field(default=True)
+
+    # --- Свой источник полных аудиофайлов (необязательно) ---
     # Шаблон ссылки на ПОЛНЫЙ файл. Поддерживает {id}, {artist}, {title}.
     AUDIO_SOURCE_URL_TEMPLATE: str = Field(default="")
     DOWNLOAD_DIR: str = Field(default="", description="Пусто = системная временная папка (работает и в Termux)")

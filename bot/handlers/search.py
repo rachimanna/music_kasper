@@ -51,7 +51,7 @@ async def handle_search_message(message: Message, query: str) -> None:
     await wait_msg.edit_text(
         f"🎵 <b>Результаты поиска:</b> «{html.escape(query)}»\n"
         f"Найдено треков: {len(tracks)}\n\n"
-        "Выберите трек для скачивания:",
+        "Выберите трек:",
         reply_markup=search_results_keyboard(session_id, tracks, page=1),
     )
 
@@ -96,5 +96,5 @@ async def handle_track_select(callback: CallbackQuery, bot: Bot) -> None:
         return
 
     chat_id = callback.message.chat.id if callback.message else callback.from_user.id
-    await callback.answer("⏳ Скачиваю полный трек…")
+    await callback.answer("⏳ Ищу трек…")
     await deliver_track(bot, chat_id, callback.from_user.id, track_id)

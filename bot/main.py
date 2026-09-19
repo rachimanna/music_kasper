@@ -13,6 +13,7 @@ from bot.database.db import db
 from bot.handlers import common, inline, search
 from bot.services.authorized_audio_service import audio_service, ffmpeg_available
 from bot.services.deezer_service import deezer
+from bot.services.jamendo_service import jamendo
 
 logger = logging.getLogger("bot")
 
@@ -34,9 +35,12 @@ async def start_web_server() -> web.AppRunner:
 
 
 def check_environment() -> None:
-    if not audio_service.configured():
-        logger.warning("AUDIO_SOURCE_URL_TEMPLATE is not set — full tracks will not be available")
+    if jamendo.configured():
+        logger.info("Jamendo is enabled — full Creative Commons tracks will be sent when available")
     else:
+        logger.warning("JAMENDO_CLIENT_ID is not set — Jamendo full tracks are disabled")
+    logger.info("Deezer previews are %s", "enabled" if config.PREVIEW_ENABLED else "disabled")
+    if audio_service.configured():
         error = audio_service.validate_template()
         if error:
             logger.error(error)
@@ -76,6 +80,7 @@ async def main() -> None:
 
     finally:
         await deezer.close()
+        await jamendo.close()
         await audio_service.close()
         await db.close()
         if runner is not None:

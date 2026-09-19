@@ -1,6 +1,7 @@
 """
-Скачивание ПОЛНЫХ аудиофайлов из источника, которым вы владеете или на который у вас есть лицензия.
-Адрес задаётся шаблоном AUDIO_SOURCE_URL_TEMPLATE с полями {id}, {artist}, {title}.
+Скачивание и конвертация полных аудиофайлов из легальных источников:
+- свой сервер (шаблон AUDIO_SOURCE_URL_TEMPLATE с полями {id}, {artist}, {title});
+- Jamendo (ссылку передаёт delivery через download_from_url).
 """
 import asyncio
 import logging
@@ -94,15 +95,16 @@ class AuthorizedAudioService:
     # ---------- основной метод ----------
 
     async def download_track(self, track: Track) -> Optional[DownloadedAudio]:
-        """Скачивает и конвертирует трек в mp3. При любой ошибке возвращает None и убирает за собой файлы."""
+        """Полный трек из своего источника (AUDIO_SOURCE_URL_TEMPLATE)."""
         if not self.configured():
-            logger.warning("AUDIO_SOURCE_URL_TEMPLATE is not configured")
             return None
-
         url = self.build_url(track)
         if not url:
             return None
+        return await self.download_from_url(url, track)
 
+    async def download_from_url(self, url: str, track: Track) -> Optional[DownloadedAudio]:
+        """Скачивает файл по ссылке и конвертирует в mp3. При ошибке возвращает None и убирает за собой файлы."""
         async with self._semaphore:
             self.download_dir.mkdir(parents=True, exist_ok=True)
             file_id = uuid.uuid4().hex

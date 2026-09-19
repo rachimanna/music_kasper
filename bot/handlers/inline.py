@@ -57,8 +57,9 @@ async def inline_search(inline_query: InlineQuery) -> None:
         )
         return
 
-    # Отправляем карточку трека с кнопкой «Скачать полную версию» (deep link в личку бота),
-    # а не 30-секундное превью Deezer — его ссылки к тому же со временем истекают.
+    # Карточка трека с кнопкой «Получить трек» (deep link в личку бота): там бот пришлёт
+    # полную версию, если она есть легально, или превью. Ссылки превью Deezer истекают,
+    # поэтому напрямую в inline их не отдаём.
     results = []
     for track in tracks[: config.INLINE_LIMIT]:
         duration = format_duration(track.duration)

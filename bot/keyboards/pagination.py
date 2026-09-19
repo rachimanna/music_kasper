@@ -41,10 +41,10 @@ def youtube_search_url(track: Track) -> str:
 def track_links_keyboard(track: Track, with_download: bool = False) -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
     if with_download and config.BOT_USERNAME:
-        # Deep link: открывает личку с ботом и сразу запускает скачивание полной версии.
+        # Deep link: открывает личку с ботом и сразу присылает трек.
         builder.row(
             InlineKeyboardButton(
-                text="⬇️ Скачать полную версию",
+                text="⬇️ Получить трек",
                 url=f"https://t.me/{config.BOT_USERNAME}?start=t_{track.id}",
             )
         )
