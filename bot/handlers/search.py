@@ -64,7 +64,7 @@ async def handle_search_message(message: Message):
         await wait_msg.edit_text(
             f"🎵 <b>Результаты поиска по запросу:</b> «{safe_query}»\n"
             f"Найдено треков: {len(tracks)}\n\n"
-            "Выберите трек для загрузки:",
+            "Выберите трек для скачивания:",
             reply_markup=keyboard,
             parse_mode="HTML"
         )
@@ -115,13 +115,13 @@ async def handle_track_select(callback: CallbackQuery):
     safe_artist = html.escape(track.artist)
     safe_title = html.escape(track.title)
 
-    await callback.answer("⏳ Загружаю трек...")
+    await callback.answer("⏳ Скачиваю полный трек...")
     status_msg = await callback.message.answer(
         f"⏳ Скачиваю полную версию <b>{safe_artist} — {safe_title}</b>...",
         parse_mode="HTML"
     )
 
-    search_query = f"{track.artist} {track.title} audio"
+    search_query = f"{track.artist} {track.title}"
     download_info = await yt_service.download_track(search_query)
 
     caption = (
@@ -151,9 +151,8 @@ async def handle_track_select(callback: CallbackQuery):
             if os.path.exists(file_path):
                 os.remove(file_path)
     else:
-        # Резервный вариант, если прямая ссылка не скачалась
         await status_msg.edit_text(
-            "⚠️ Полный трек временно недоступен. Отправляю превью:",
+            "⚠️ Полный трек не найден. Отправляю превью:",
             parse_mode="HTML"
         )
         if track.preview_url:
