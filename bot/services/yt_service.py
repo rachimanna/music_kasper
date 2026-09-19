@@ -3,9 +3,8 @@ import os
 import re
 import urllib.parse
 import logging
-from typing import Optional, Dict
+from typing import Optional, Dict, List
 import aiohttp
-import yt_dlp
 
 logger = logging.getLogger(__name__)
 
@@ -13,7 +12,7 @@ DOWNLOAD_DIR = "/tmp/music_cache"
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 
 
-class UltimateMusicDownloader:
+class DirectMusicDownloader:
     def __init__(self):
         self.headers = {
             "User-Agent": (
@@ -24,31 +23,36 @@ class UltimateMusicDownloader:
             "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7",
         }
 
-    def _get_search_queries(self, raw_query: str) -> list[str]:
-        # Очищаем от подчеркиваний и мусора
-        cleaned = raw_query.replace("_", " ").replace("-", " ")
-        cleaned = re.sub(r'\(.*?\)|\[.*?\]', '', cleaned)
-        cleaned = re.sub(r'\s+', ' ', cleaned).strip()
+    def _generate_queries(self, artist: str, title: str) -> List[str]:
+        """Генерирует умные варианты запросов"""
+        clean_artist = re.sub(r'[_\-\(\)\[\]]', ' ', artist).strip()
+        clean_title = re.sub(r'[_\-\(\)\[\]]', ' ', title).strip()
+        
+        queries = [
+            f"{clean_artist} {clean_title}".strip(),
+            clean_title.strip()  # Искать чисто по названию, если автор на латинице (например Zaret_khan)
+        ]
+        
+        # Удаляем дубли и пустые строки
+        result = []
+        for q in queries:
+            q = re.sub(r'\s+', ' ', q).strip()
+            if q and q not in result:
+                result.append(q)
+        return result
 
-        queries = [cleaned]
-        words = cleaned.split()
-
-        # Если автор был на латинице (Zaret khan Моника), добавляем поиск чисто по названию песни
-        if len(words) >= 2:
-            title_only = " ".join(words[1:])  # отрезаем первое слово (автора)
-            if len(title_only) >= 3:
-                queries.append(title_only)
-
-        return queries
-
-    async def _download_stream(self, session: aiohttp.ClientSession, url: str, referer: str, file_path: str) -> bool:
+    async def _download_file(self, session: aiohttp.ClientSession, url: str, referer: str, file_path: str) -> bool:
         headers = self.headers.copy()
         headers["Referer"] = referer
 
         try:
-            timeout = aiohttp.ClientTimeout(total=30)
+            timeout = aiohttp.ClientTimeout(total=25)
             async with session.get(url, headers=headers, timeout=timeout, allow_redirects=True) as resp:
                 if resp.status != 200:
+                    return False
+
+                content_type = resp.headers.get("Content-Type", "").lower()
+                if "html" in content_type or "text" in content_type:
                     return False
 
                 with open(file_path, "wb") as f:
@@ -60,122 +64,116 @@ class UltimateMusicDownloader:
                         f.write(chunk)
                         size += len(chunk)
 
-                # Если трек весит больше 500 КБ — это 100% полная песня
+                # Если файл больше 500 КБ — это 100% полная песня
                 if size > 500 * 1024:
-                    logger.info(f"Full MP3 successfully downloaded ({round(size / 1024 / 1024, 2)} MB)")
+                    logger.info(f"Successfully downloaded full MP3 ({round(size / 1024 / 1024, 2)} MB)")
                     return True
                 else:
                     if os.path.exists(file_path):
                         os.remove(file_path)
-                    return False
         except Exception as e:
-            logger.warning(f"Stream error from {url}: {e}")
+            logger.warning(f"Download stream error: {e}")
             if os.path.exists(file_path):
                 os.remove(file_path)
-            return False
+        return False
 
     async def _try_hitmo(self, session: aiohttp.ClientSession, query: str, file_path: str) -> bool:
         try:
             encoded = urllib.parse.quote(query)
-            search_url = f"https://rus.hitmotop.com/search?q={encoded}"
+            url = f"https://rus.hitmotop.com/search?q={encoded}"
             headers = self.headers.copy()
             headers["Referer"] = "https://rus.hitmotop.com/"
 
-            async with session.get(search_url, headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+            async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=8)) as resp:
                 if resp.status != 200:
                     return False
                 html = await resp.text()
 
-            # Точный поиск прямых MP3-ссылок Hitmo вида /get/track/123456.mp3
-            links = re.findall(r'(/get/track/\d+\.mp3)', html)
+            # Ищем любые кнопки скачивания или прямые mp3
+            links = []
+            for tag in re.findall(r'<a\s+[^>]*class=["\'][^"\']*track__download-btn[^"\']*["\'][^>]*>', html):
+                href_match = re.search(r'href=["\']([^"\']+)["\']', tag)
+                if href_match:
+                    links.append(href_match.group(1))
+
             if not links:
                 links = re.findall(r'href=["\']([^"\']+/get/track/[^"\']+)["\']', html)
 
-            for link in links[:2]:
+            for link in links[:3]:
                 dl_url = link if link.startswith("http") else f"https://rus.hitmotop.com{link}"
-                if await self._download_stream(session, dl_url, "https://rus.hitmotop.com/", file_path):
-                    logger.info(f"Hitmo hit for query: '{query}'")
+                if await self._download_file(session, dl_url, "https://rus.hitmotop.com/", file_path):
+                    logger.info(f"Hitmo found track for query: '{query}'")
                     return True
         except Exception as e:
-            logger.warning(f"Hitmo search error: {e}")
+            logger.warning(f"Hitmo error: {e}")
         return False
 
-    async def _try_muzofond(self, session: aiohttp.ClientSession, query: str, file_path: str) -> bool:
+    async def _try_mp3party(self, session: aiohttp.ClientSession, query: str, file_path: str) -> bool:
         try:
             encoded = urllib.parse.quote(query)
-            search_url = f"https://muzofond.fm/search/{encoded}"
+            url = f"https://mp3party.net/search?q={encoded}"
             headers = self.headers.copy()
-            headers["Referer"] = "https://muzofond.fm/"
+            headers["Referer"] = "https://mp3party.net/"
 
-            async with session.get(search_url, headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+            async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=8)) as resp:
                 if resp.status != 200:
                     return False
                 html = await resp.text()
 
-            links = re.findall(r'data-url=["\'](https?://[^"\']+\.mp3[^"\']*)["\']', html)
-            for dl_url in links[:2]:
-                if await self._download_stream(session, dl_url, "https://muzofond.fm/", file_path):
-                    logger.info(f"Muzofond hit for query: '{query}'")
+            links = re.findall(r'href=["\'](/download/\d+)["\']', html)
+            for link in links[:3]:
+                dl_url = f"https://mp3party.net{link}"
+                if await self._download_file(session, dl_url, "https://mp3party.net/", file_path):
+                    logger.info(f"Mp3Party found track for query: '{query}'")
                     return True
         except Exception as e:
-            logger.warning(f"Muzofond search error: {e}")
+            logger.warning(f"Mp3Party error: {e}")
         return False
 
-    def _download_yt_tv(self, query: str, file_path: str) -> bool:
-        """Скачивание через YouTube TV клиент (не банится Render'ом)"""
-        ydl_opts = {
-            "format": "bestaudio/best",
-            "outtmpl": file_path.replace(".mp3", ".%(ext)s"),
-            "noplaylist": True,
-            "quiet": True,
-            "no_warnings": True,
-            "default_search": "ytsearch1:",
-            "extractor_args": {
-                "youtube": {
-                    "player_client": ["tv_embedded", "tv"],
-                }
-            },
-            "postprocessors": [{
-                "key": "FFmpegExtractAudio",
-                "preferredcodec": "mp3",
-                "preferredquality": "192",
-            }],
-        }
-
+    async def _try_drivemusic(self, session: aiohttp.ClientSession, query: str, file_path: str) -> bool:
         try:
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                ydl.download([query])
+            encoded = urllib.parse.quote(query)
+            url = f"https://drivemusic.me/?do=search&subaction=search&story={encoded}"
+            headers = self.headers.copy()
+            headers["Referer"] = "https://drivemusic.me/"
 
-            if os.path.exists(file_path) and os.path.getsize(file_path) > 400 * 1024:
-                logger.info(f"YouTube TV downloaded full track for '{query}'")
-                return True
+            async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=8)) as resp:
+                if resp.status != 200:
+                    return False
+                html = await resp.text()
+
+            links = re.findall(r'href=["\']((?:https://drivemusic\.me)?/dl/[^"\']+)["\']', html)
+            for link in links[:3]:
+                dl_url = link if link.startswith("http") else f"https://drivemusic.me{link}"
+                if await self._download_file(session, dl_url, "https://drivemusic.me/", file_path):
+                    logger.info(f"DriveMusic found track for query: '{query}'")
+                    return True
         except Exception as e:
-            logger.warning(f"YouTube TV error: {e}")
+            logger.warning(f"DriveMusic error: {e}")
         return False
 
-    async def download_track(self, query: str) -> Optional[Dict[str, str]]:
-        queries_to_try = self._get_search_queries(query)
-        file_path = os.path.join(DOWNLOAD_DIR, f"{abs(hash(query))}.mp3")
+    async def download_track(self, artist: str, title: str) -> Optional[Dict[str, str]]:
+        queries = self._generate_queries(artist, title)
+        file_path = os.path.join(DOWNLOAD_DIR, f"{abs(hash(artist + title))}.mp3")
 
         timeout = aiohttp.ClientTimeout(total=30)
         async with aiohttp.ClientSession(headers=self.headers, timeout=timeout) as session:
-            # 1. Ищем в Hitmo (по полному имени, потом по названию песни)
-            for q in queries_to_try:
+            for q in queries:
+                logger.info(f"Searching full MP3 for: '{q}'")
+                
+                # 1. Hitmo
                 if await self._try_hitmo(session, q, file_path):
-                    return {"file_path": file_path, "title": query, "artist": "Music", "duration": 0}
+                    return {"file_path": file_path, "title": title, "artist": artist, "duration": 0}
 
-            # 2. Ищем в Muzofond
-            for q in queries_to_try:
-                if await self._try_muzofond(session, q, file_path):
-                    return {"file_path": file_path, "title": query, "artist": "Music", "duration": 0}
+                # 2. Mp3Party
+                if await self._try_mp3party(session, q, file_path):
+                    return {"file_path": file_path, "title": title, "artist": artist, "duration": 0}
 
-        # 3. Железный резерв: YouTube TV
-        loop = asyncio.get_running_loop()
-        ok = await loop.run_in_executor(None, self._download_yt_tv, queries_to_try[0], file_path)
-        if ok and os.path.exists(file_path):
-            return {"file_path": file_path, "title": query, "artist": "Music", "duration": 0}
+                # 3. DriveMusic
+                if await self._try_drivemusic(session, q, file_path):
+                    return {"file_path": file_path, "title": title, "artist": artist, "duration": 0}
 
         return None
 
 
-yt_service = UltimateMusicDownloader()
+yt_service = DirectMusicDownloader()
