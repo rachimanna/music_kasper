@@ -121,8 +121,8 @@ async def handle_track_select(callback: CallbackQuery):
         parse_mode="HTML"
     )
 
-    search_query = f"{track.artist} {track.title}"
-    download_info = await yt_service.download_track(search_query)
+    # Передаем автора и название раздельно для умного поиска
+    download_info = await yt_service.download_track(track.artist, track.title)
 
     caption = (
         f"🎧 <b>{safe_artist} — {safe_title}</b>\n"
