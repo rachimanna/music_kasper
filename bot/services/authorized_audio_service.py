@@ -1,139 +1,88 @@
 import asyncio
 import logging
 import os
-import re
 import uuid
 from pathlib import Path
 from typing import Optional
 
 import aiohttp
 
-from bot.services.base import Track
-
 logger = logging.getLogger(__name__)
 
 DOWNLOAD_DIR = Path(
-    os.getenv("DOWNLOAD_DIR", "/tmp/music_cache")
+    os.getenv("DOWNLOAD_DIR", "/tmp/music_kasper")
 )
 DOWNLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
+MAX_AUDIO_MB = int(
+    os.getenv("MAX_AUDIO_SIZE_MB", "49")
+)
+
+MAX_AUDIO_BYTES = MAX_AUDIO_MB * 1024 * 1024
+
+DOWNLOAD_TIMEOUT = int(
+    os.getenv("AUDIO_DOWNLOAD_TIMEOUT", "180")
+)
+
+AUDIO_SOURCE_URL_TEMPLATE = os.getenv(
+    "AUDIO_SOURCE_URL_TEMPLATE",
+    ""
+).strip()
+
 
 class AuthorizedAudioService:
-    """
-    Сервис получения полного аудиофайла из настроенного
-    разрешённого источника.
-
-    В Render нужно будет указать:
-
-    AUDIO_SOURCE_URL_TEMPLATE
-
-    Пример формата:
-    https://example.com/audio/{id}.m4a
-
-    Поддерживаются:
-    {id}
-    {artist}
-    {title}
-    """
 
     def __init__(self):
-        self.template = os.getenv(
-            "AUDIO_SOURCE_URL_TEMPLATE",
-            ""
-        ).strip()
-
-        # Telegram Bot API имеет ограничения на размер
-        # загружаемых файлов. Оставляем запас.
-        self.max_bytes = int(
-            os.getenv(
-                "MAX_AUDIO_BYTES",
-                str(49 * 1024 * 1024)
-            )
-        )
-
         self.timeout = aiohttp.ClientTimeout(
             total=None,
             connect=30,
             sock_connect=30,
-            sock_read=180,
+            sock_read=DOWNLOAD_TIMEOUT,
         )
 
         self.headers = {
-            "User-Agent": "MusicKasPerBot/2.0",
+            "User-Agent": "MusicKasPerBot/1.0",
             "Accept": "*/*",
         }
 
     def configured(self) -> bool:
-        """
-        Проверяет, настроен ли источник полного аудио.
-        """
+        return bool(AUDIO_SOURCE_URL_TEMPLATE)
 
-        return bool(self.template)
-
-    @staticmethod
-    def _safe_name(value: str) -> str:
-        """
-        Делает безопасное имя файла.
-        """
-
-        value = re.sub(
-            r"[^\w\- .()]+",
-            "_",
-            value,
-            flags=re.UNICODE
-        )
-
-        value = value.strip(" .")
-
-        return value[:100] or "track"
-
-    def _build_url(self, track: Track) -> Optional[str]:
-        """
-        Формирует URL полного аудио.
-        """
+    def _make_url(
+        self,
+        artist: str,
+        title: str
+    ) -> Optional[str]:
 
         if not self.configured():
             return None
 
         try:
-            return self.template.format(
-                id=track.id,
-                artist=track.artist,
-                title=track.title,
+            return AUDIO_SOURCE_URL_TEMPLATE.format(
+                artist=artist,
+                title=title,
             )
-
-        except Exception as e:
+        except Exception as exc:
             logger.error(
                 "Failed to build audio URL: %s",
-                e
+                exc
             )
             return None
 
     async def _download(
         self,
         url: str,
-        output: Path
+        destination: Path
     ) -> bool:
-        """
-        Скачивает файл потоково, не загружая его
-        целиком в RAM.
-        """
 
-        temp = output.with_suffix(
-            output.suffix + ".part"
+        temporary = destination.with_suffix(
+            destination.suffix + ".part"
         )
 
         try:
-
-            connector = aiohttp.TCPConnector(
-                limit=10,
-                ttl_dns_cache=300
-            )
-
             async with aiohttp.ClientSession(
-                connector=connector,
                 timeout=self.timeout,
-                headers=self.headers,
+                headers=self.headers
             ) as session:
 
                 async with session.get(
@@ -143,8 +92,9 @@ class AuthorizedAudioService:
 
                     if response.status != 200:
                         logger.error(
-                            "Audio server returned HTTP %s",
-                            response.status
+                            "Audio source HTTP %s: %s",
+                            response.status,
+                            url
                         )
                         return False
 
@@ -153,25 +103,24 @@ class AuthorizedAudioService:
                     )
 
                     if content_length:
-
                         try:
-                            content_length = int(
-                                content_length
-                            )
-
-                            if content_length > self.max_bytes:
+                            if (
+                                int(content_length)
+                                > MAX_AUDIO_BYTES
+                            ):
                                 logger.error(
-                                    "Audio file is too large: %s bytes",
-                                    content_length
+                                    "Audio file is too large"
                                 )
                                 return False
-
                         except ValueError:
                             pass
 
-                    size = 0
+                    downloaded = 0
 
-                    with temp.open("wb") as file:
+                    with open(
+                        temporary,
+                        "wb"
+                    ) as output:
 
                         async for chunk in response.content.iter_chunked(
                             256 * 1024
@@ -180,238 +129,239 @@ class AuthorizedAudioService:
                             if not chunk:
                                 continue
 
-                            size += len(chunk)
+                            downloaded += len(chunk)
 
-                            if size > self.max_bytes:
+                            if downloaded > MAX_AUDIO_BYTES:
                                 logger.error(
-                                    "Audio exceeded maximum size"
+                                    "Audio exceeded %s MB",
+                                    MAX_AUDIO_MB
                                 )
                                 return False
 
-                            file.write(chunk)
+                            output.write(chunk)
 
-                    if size < 64 * 1024:
+                    if downloaded < 1024:
                         logger.error(
-                            "Downloaded audio is too small: %s bytes",
-                            size
+                            "Downloaded file is empty"
                         )
                         return False
 
-            temp.replace(output)
-
-            logger.info(
-                "Audio downloaded successfully: %.2f MB",
-                output.stat().st_size / 1024 / 1024
-            )
+            temporary.replace(destination)
 
             return True
 
         except asyncio.TimeoutError:
-
             logger.error(
-                "Audio download timed out"
+                "Audio download timeout"
             )
-
             return False
 
-        except aiohttp.ClientError as e:
-
+        except aiohttp.ClientError as exc:
             logger.error(
                 "Audio network error: %s",
-                e
+                exc
             )
-
             return False
 
-        except Exception as e:
-
+        except Exception as exc:
             logger.exception(
-                "Audio download failed: %s",
-                e
+                "Audio download error: %s",
+                exc
             )
-
             return False
 
         finally:
-
             try:
-                if temp.exists():
-                    temp.unlink()
+                if temporary.exists():
+                    temporary.unlink()
             except Exception:
                 pass
 
-            if not output.exists():
-                try:
-                    output.unlink()
-                except Exception:
-                    pass
-
     async def download_track(
         self,
-        track: Track
-    ) -> Optional[Path]:
-        """
-        Скачивает исходный полный аудиофайл.
-        """
+        artist: str,
+        title: str
+    ) -> Optional[dict]:
 
         if not self.configured():
-
             logger.warning(
                 "AUDIO_SOURCE_URL_TEMPLATE is not configured"
             )
-
             return None
 
-        url = self._build_url(track)
+        url = self._make_url(
+            artist,
+            title
+        )
 
         if not url:
             return None
 
-        unique_id = uuid.uuid4().hex
+        file_id = uuid.uuid4().hex
 
-        filename = (
-            f"{unique_id}_"
-            f"{self._safe_name(track.artist)} - "
-            f"{self._safe_name(track.title)}.audio"
+        source_file = (
+            DOWNLOAD_DIR /
+            f"{file_id}.source"
         )
 
-        output = DOWNLOAD_DIR / filename
-
-        logger.info(
-            "Downloading full track: %s — %s",
-            track.artist,
-            track.title
+        mp3_file = (
+            DOWNLOAD_DIR /
+            f"{file_id}.mp3"
         )
 
-        success = await self._download(
-            url,
-            output
-        )
+        try:
 
-        if not success:
-            output.unlink(missing_ok=True)
-            return None
+            logger.info(
+                "Downloading full track: %s — %s",
+                artist,
+                title
+            )
 
-        return output
+            success = await self._download(
+                url,
+                source_file
+            )
 
-    async def convert_to_mp3(
-        self,
-        source: Path,
-        track: Track
-    ) -> Optional[Path]:
-        """
-        Конвертирует полученный файл в MP3 через FFmpeg.
-        """
+            if not success:
+                return None
 
-        if not source.exists():
-            logger.error(
-                "Source file does not exist: %s",
-                source
+            success = await self._convert_to_mp3(
+                source_file,
+                mp3_file
+            )
+
+            if not success:
+                return None
+
+            duration = await self._get_duration(
+                mp3_file
+            )
+
+            if duration <= 0:
+                logger.error(
+                    "Could not determine audio duration"
+                )
+                return None
+
+            return {
+                "file_path": str(mp3_file),
+                "title": title,
+                "artist": artist,
+                "duration": duration,
+            }
+
+        except Exception as exc:
+            logger.exception(
+                "Audio service error: %s",
+                exc
             )
             return None
 
-        output = source.with_suffix(".mp3")
+        finally:
+            try:
+                if source_file.exists():
+                    source_file.unlink()
+            except Exception:
+                pass
 
-        command = [
-            "ffmpeg",
-            "-y",
-            "-hide_banner",
-            "-loglevel",
-            "error",
-
-            "-i",
-            str(source),
-
-            "-vn",
-            "-map",
-            "0:a:0",
-
-            "-c:a",
-            "libmp3lame",
-
-            "-b:a",
-            "192k",
-
-            str(output),
-        ]
+    async def _convert_to_mp3(
+        self,
+        source: Path,
+        destination: Path
+    ) -> bool:
 
         try:
 
             process = await asyncio.create_subprocess_exec(
-                *command,
-                stdout=asyncio.subprocess.PIPE,
+                "ffmpeg",
+                "-y",
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-i",
+                str(source),
+                "-vn",
+                "-map",
+                "0:a:0",
+                "-codec:a",
+                "libmp3lame",
+                "-b:a",
+                "192k",
+                str(destination),
+                stdout=asyncio.subprocess.DEVNULL,
                 stderr=asyncio.subprocess.PIPE,
             )
 
             _, stderr = await process.communicate()
 
             if process.returncode != 0:
-
                 logger.error(
-                    "FFmpeg error:\n%s",
+                    "FFmpeg error: %s",
                     stderr.decode(
                         errors="ignore"
                     )[-3000:]
                 )
+                return False
 
-                output.unlink(
-                    missing_ok=True
-                )
+            if not destination.exists():
+                return False
 
-                return None
+            if destination.stat().st_size < 1024:
+                return False
 
-            if not output.exists():
-
-                logger.error(
-                    "FFmpeg did not create MP3"
-                )
-
-                return None
-
-            if output.stat().st_size < 64 * 1024:
-
-                logger.error(
-                    "Generated MP3 is too small"
-                )
-
-                output.unlink(
-                    missing_ok=True
-                )
-
-                return None
-
-            # Исходник больше не нужен.
-            source.unlink(
-                missing_ok=True
-            )
-
-            logger.info(
-                "MP3 created: %.2f MB",
-                output.stat().st_size / 1024 / 1024
-            )
-
-            return output
+            return True
 
         except FileNotFoundError:
-
             logger.error(
                 "FFmpeg is not installed"
             )
+            return False
 
-            return None
-
-        except Exception as e:
-
+        except Exception as exc:
             logger.exception(
-                "FFmpeg conversion failed: %s",
-                e
+                "FFmpeg conversion error: %s",
+                exc
+            )
+            return False
+
+    async def _get_duration(
+        self,
+        file_path: Path
+    ) -> int:
+
+        try:
+
+            process = await asyncio.create_subprocess_exec(
+                "ffprobe",
+                "-v",
+                "error",
+                "-show_entries",
+                "format=duration",
+                "-of",
+                "default=noprint_wrappers=1:nokey=1",
+                str(file_path),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.DEVNULL,
             )
 
-            output.unlink(
-                missing_ok=True
-            )
+            stdout, _ = await process.communicate()
 
-            return None
+            if process.returncode != 0:
+                return 0
+
+            value = stdout.decode().strip()
+
+            if not value:
+                return 0
+
+            return int(float(value))
+
+        except Exception as exc:
+            logger.error(
+                "ffprobe error: %s",
+                exc
+            )
+            return 0
 
 
 audio_service = AuthorizedAudioService()
