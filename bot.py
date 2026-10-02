@@ -211,7 +211,10 @@ class TooBig(Exception):
 
 def download(url: str, workdir: str) -> tuple[Path, dict]:
     opts = _base_opts() | {
-        "format": "bestaudio/best",
+        # Берём готовый mp3 с SoundCloud — тогда ffmpeg ничего не перекодирует
+        # (на слабом CPU бесплатного Render перекодирование занимало до минуты).
+        "format": "bestaudio[acodec=mp3][protocol^=http]/bestaudio[acodec=mp3]/bestaudio/best",
+        "concurrent_fragment_downloads": 8,
         "outtmpl": f"{workdir}/%(id)s.%(ext)s",
         "max_filesize": MAX_FILESIZE,
         "postprocessors": [
