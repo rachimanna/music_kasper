@@ -10,6 +10,7 @@ import shutil
 import subprocess
 import tempfile
 from collections import OrderedDict
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import yt_dlp
@@ -141,7 +142,7 @@ def _base_opts() -> dict:
 def _search_source(source: str, query: str, limit: int) -> list[dict]:
     opts = _base_opts() | {"extract_flat": "in_playlist", "skip_download": True}
     with yt_dlp.YoutubeDL(opts) as ydl:
-        info = ydl.extract_info(f"{SEARCH_PREFIX[source]}{limit + 4}:{query}", download=False)
+        info = ydl.extract_info(f"{SEARCH_PREFIX[source]}{limit}:{query}", download=False)
     results = []
     for e in info.get("entries") or []:
         duration = e.get("duration")
@@ -158,14 +159,28 @@ def _search_source(source: str, query: str, limit: int) -> list[dict]:
                 "url": url,
             }
         )
-    return results[:limit]
+    return results
+
+
+def _is_downloadable(track: dict) -> bool:
+    """Отсеивает треки с DRM и прочие, которые не скачать."""
+    try:
+        with yt_dlp.YoutubeDL(_base_opts() | {"skip_download": True}) as ydl:
+            info = ydl.extract_info(track["url"], download=False)
+        return bool(info.get("formats") or info.get("url"))
+    except Exception as e:
+        log.info("skip %s: %s", track["url"], str(e)[-80:])
+        return False
 
 
 def search(query: str) -> list[dict]:
     last_error = None
     for source in SOURCES:
         try:
-            if results := _search_source(source, query, RESULTS_LIMIT):
+            candidates = _search_source(source, query, RESULTS_LIMIT * 2 + 4)
+            with ThreadPoolExecutor(max_workers=8) as pool:
+                ok = list(pool.map(_is_downloadable, candidates))
+            if results := [t for t, good in zip(candidates, ok) if good][:RESULTS_LIMIT]:
                 return results
         except Exception as e:  # пробуем следующий источник
             last_error = e
