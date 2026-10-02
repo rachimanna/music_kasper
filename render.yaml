@@ -1,0 +1,12 @@
+services:
+  - type: web
+    name: music-kasper
+    runtime: docker
+    plan: free
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - key: BOT_TOKEN
+        sync: false
+      - key: SOURCES
+        value: soundcloud
